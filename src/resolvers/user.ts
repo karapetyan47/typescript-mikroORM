@@ -1,7 +1,8 @@
-import { Resolver, Mutation, InputType, Field, Arg, Ctx, ObjectType } from "type-graphql";
+import { Resolver, Mutation, InputType, Field, Arg, Ctx, ObjectType, Query } from "type-graphql";
 import { MyContext } from "../types";
 import { User } from "../entities/User";
 import argon2 from "argon2";
+import { EntityManager } from "@mikro-orm/postgresql"
 
 @InputType()
 class UsernamePasswordInput {
@@ -31,15 +32,62 @@ class UserResponse {
 
 @Resolver()
 export class UserResolver {
+    @Query(() => User)
+    async me(
+        @Ctx() { em, req }: MyContext
+    ) {
+        if (!req.session.userId) {
+            return null
+        }
+
+        const user = em.findOne(User, { id: req.session.userId })
+        return user
+    }
+
+
+
     @Mutation(() => UserResponse)
     async register(
         @Arg("options") options: UsernamePasswordInput,
-        @Ctx() { em }: MyContext
+        @Ctx() { em, req }: MyContext
     ): Promise<UserResponse> {
+
+        if (options.username.length <= 2) {
+            return {
+                error: [
+                    {
+                        field: "username",
+                        message: "length must be greater than 2"
+                    }
+                ]
+            }
+        }
+
+        if (options.password.length <= 3) {
+            return {
+                error: [
+                    {
+                        field: "username",
+                        message: "length must be greater than 3"
+                    }
+                ]
+            }
+        }
+
         const hasshedPassword = await argon2.hash(options.password)
-        const user = em.create(User, { username: options.username, password: hasshedPassword })
+        let user;
         try {
-            await em.persistAndFlush(user)
+            const result = await (em as EntityManager)
+                .createQueryBuilder(User)
+                .getKnexQuery()
+                .insert({
+                    username: options.username,
+                    password: hasshedPassword,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                })
+                .returning("*")
+            user = result[0]
         } catch (err) {
             if (err.code === "23505") {
                 return {
@@ -51,15 +99,16 @@ export class UserResolver {
                     ]
                 }
             }
-            console.log(err);
         }
+        req.session.userId = user.id
+
         return { user }
     }
 
     @Mutation(() => UserResponse)
     async login(
         @Arg("options") options: UsernamePasswordInput,
-        @Ctx() { em }: MyContext
+        @Ctx() { em, req }: MyContext
     ): Promise<UserResponse> {
 
         if (options.username.length <= 2) {
@@ -104,6 +153,9 @@ export class UserResolver {
                 }]
             }
         }
+
+        req.session.userId = user.id
+
         return { user }
     }
 
